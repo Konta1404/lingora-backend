@@ -20,6 +20,11 @@ const HANDLE = /^[a-z0-9._]{3,20}$/;
 export interface ProfileDTO {
   uid: string; name: string; handle: string; hue: number; langs: string[];
   streak: number; weekMinutes: number; practisedToday: boolean;
+  /** False when the person hides their activity from friends (stats are then zero for others). */
+  sharesActivity: boolean;
+  /** Version of the profile photo (0 = none); fetch it from GET /avatar/<uid>?v=<photo>. */
+  photo: number;
+  unread?: number; lastMessage?: string | null; lastMessageAt?: number | null; lastFromMe?: boolean;
 }
 
 function clip(s: unknown, n: number): string {
@@ -63,9 +68,14 @@ function daysActiveSince(activity: Record<string, number>, from: string, to?: st
   return Object.entries(activity).filter(([d, m]) => d >= from && (!to || d <= to) && m > 0).length;
 }
 
-function toDTO(uid: string, p: DocumentData | undefined, today: string, weekStart: string): ProfileDTO {
-  const activity = (p?.activity ?? {}) as Record<string, number>;
+const sharesActivity = (p: DocumentData | undefined) => p?.shareActivity !== false;
+
+function toDTO(uid: string, p: DocumentData | undefined, today: string, weekStart: string, viewer: string): ProfileDTO {
+  const visible = sharesActivity(p) || uid === viewer;
+  const activity = visible ? ((p?.activity ?? {}) as Record<string, number>) : {};
   return {
+    sharesActivity: sharesActivity(p),
+    photo: (p?.photoVersion as number | undefined) ?? 0,
     uid,
     name: p?.name ?? "Lingora learner",
     handle: p?.handle ?? "",
@@ -175,8 +185,10 @@ export async function reportActivity(uid: string, d: {
   const ref = profiles().doc(uid);
   let streak = 0;
   let milestone: number | null = null;
+  let shares = true;
   await db().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
+    shares = sharesActivity(snap.data());
     const activity = { ...((snap.get("activity") ?? {}) as Record<string, number>) };
     for (const [k, v] of incoming) activity[k] = Math.max(activity[k] ?? 0, v);
     const cutoff = addDays(today, -90);
@@ -189,6 +201,7 @@ export async function reportActivity(uid: string, d: {
   });
 
   const feed = ref.collection("feed");
+  if (!shares) return { streak };
   if (d.event && FEED_TYPES.has(d.event.type)) {
     const params: Record<string, string> = {};
     for (const [k, v] of Object.entries(d.event.params ?? {}).slice(0, 6)) params[clip(k, 20)] = clip(v, 120);
@@ -208,7 +221,7 @@ export async function searchUsers(uid: string, query: string, today: string, wee
   const snap = await handles().where(FieldPath.documentId(), ">=", q).where(FieldPath.documentId(), "<=", q + "\uf8ff").limit(10).get();
   const uids = snap.docs.map((d) => d.get("uid") as string).filter((u) => u !== uid);
   const ps = await getProfiles(uids);
-  return { users: await withRelations(uid, uids.filter((u) => ps.has(u)).map((u) => toDTO(u, ps.get(u), today, weekStart))) };
+  return { users: await withRelations(uid, uids.filter((u) => ps.has(u)).map((u) => toDTO(u, ps.get(u), today, weekStart, uid))) };
 }
 
 export async function matchContacts(uid: string, hashes: string[], today: string, weekStart: string) {
@@ -216,7 +229,7 @@ export async function matchContacts(uid: string, hashes: string[], today: string
   const found: ProfileDTO[] = [];
   for (let i = 0; i < clean.length; i += 30) {
     const snap = await profiles().where("emailHash", "in", clean.slice(i, i + 30)).get();
-    snap.docs.filter((d) => d.id !== uid).forEach((d) => found.push(toDTO(d.id, d.data(), today, weekStart)));
+    snap.docs.filter((d) => d.id !== uid).forEach((d) => found.push(toDTO(d.id, d.data(), today, weekStart, uid)));
   }
   return { users: await withRelations(uid, found) };
 }
@@ -284,17 +297,20 @@ export async function overview(uid: string, today: string, weekStart: string) {
     else incomingIds.push(other);
   }
   const ps = await getProfiles([uid, ...friendsIds, ...incomingIds, ...outgoingIds]);
-  const dto = (u: string) => toDTO(u, ps.get(u), today, weekStart);
+  const dto = (u: string) => toDTO(u, ps.get(u), today, weekStart, uid);
 
   // Feed: latest items from me and my friends.
   const feedOwners = [uid, ...friendsIds].slice(0, 60);
   const feedSnaps = await Promise.all(feedOwners.map((u) => profiles().doc(u).collection("feed").orderBy("createdAt", "desc").limit(8).get()));
-  const feed = feedSnaps.flatMap((s, i) => s.docs.map((d) => {
+  const feed = feedSnaps.flatMap((s, i) => s.docs
+    .filter((d) => feedOwners[i] === uid || sharesActivity(ps.get(feedOwners[i])) || d.get("type") === "plan")
+    .map((d) => {
     const owner = feedOwners[i];
     const cheers = (d.get("cheers") ?? []) as string[];
     const at = d.get("createdAt") as Timestamp | undefined;
     return {
       id: d.id, uid: owner, name: ps.get(owner)?.name ?? "", hue: ps.get(owner)?.hue ?? hueFor(owner),
+      photo: (ps.get(owner)?.photoVersion as number | undefined) ?? 0,
       type: d.get("type") as string, params: (d.get("params") ?? {}) as Record<string, string>,
       createdAt: at ? at.toMillis() : Date.now(), cheers: cheers.length, cheeredByMe: cheers.includes(uid),
       planId: (d.get("params") ?? {}).planId ?? null,
@@ -305,9 +321,23 @@ export async function overview(uid: string, today: string, weekStart: string) {
   const nsnap = await profiles().doc(uid).collection("nudges").orderBy("createdAt", "desc").limit(10).get();
   const nudges = nsnap.docs.filter((d) => !d.get("seen")).map((d) => ({ id: d.id, from: d.get("from") as string, name: d.get("name") as string }));
 
+  // Last message and unread count per friend.
+  const chatSnaps = friendsIds.length ? await db().getAll(...friendsIds.map((f) => db().collection("chats").doc(pairId(uid, f)))) : [];
+  const friends = friendsIds.map((f, i) => {
+    const c = chatSnaps[i];
+    const at = c?.get("lastAt") as Timestamp | undefined;
+    return {
+      ...dto(f),
+      unread: (c?.exists ? (c.get(`unread.${uid}`) as number | undefined) : 0) ?? 0,
+      lastMessage: c?.exists ? ((c.get("lastText") as string | undefined) ?? null) : null,
+      lastMessageAt: at ? at.toMillis() : null,
+      lastFromMe: c?.exists ? c.get("lastFrom") === uid : false,
+    };
+  });
+
   return {
     me: dto(uid),
-    friends: friendsIds.map(dto).sort((a, b) => b.weekMinutes - a.weekMinutes),
+    friends: friends.sort((a, b) => b.weekMinutes - a.weekMinutes),
     incoming: incomingIds.map(dto),
     outgoing: outgoingIds.map(dto),
     feed,
@@ -443,6 +473,8 @@ export async function getSharedPlan(uid: string, planId: string) {
 
 export async function chatMessages(uid: string, other: string) {
   await requireFriend(uid, other);
+  const chat = db().collection("chats").doc(pairId(uid, other));
+  if (((await chat.get()).get(`unread.${uid}`) ?? 0) > 0) await chat.set({ unread: { [uid]: 0 } }, { merge: true });
   const snap = await db().collection("chats").doc(pairId(uid, other)).collection("messages").orderBy("createdAt", "desc").limit(60).get();
   return {
     messages: snap.docs.reverse().map((d) => {
@@ -469,8 +501,12 @@ export async function sendChatMessage(uid: string, other: string, text: string,
       correction = null;
     }
   }
-  const ref = await db().collection("chats").doc(pairId(uid, other)).collection("messages")
-    .add({ from: uid, text: t, correction, createdAt: FieldValue.serverTimestamp() });
+  const chat = db().collection("chats").doc(pairId(uid, other));
+  const ref = await chat.collection("messages").add({ from: uid, text: t, correction, createdAt: FieldValue.serverTimestamp() });
+  await chat.set({
+    users: [uid, other].sort(), lastText: t.slice(0, 140), lastFrom: uid, lastAt: FieldValue.serverTimestamp(),
+    unread: { [other]: FieldValue.increment(1), [uid]: 0 },
+  }, { merge: true });
   return { id: ref.id, correction };
 }
 
@@ -500,3 +536,36 @@ export async function removeDevice(uid: string, id: string) {
 }
 
 export { friendUids };
+
+// ---------- Privacy & profile photo ----------
+
+export async function setPrivacy(uid: string, shareActivity: boolean) {
+  await profiles().doc(uid).set({ shareActivity }, { merge: true });
+  return { shareActivity };
+}
+
+const MAX_PHOTO = 180_000; // base64 must fit the 256 KB request limit
+
+/** Stores a small JPEG (the app sends ~256×256) in Firestore; no Cloud Storage bucket needed. */
+export async function setAvatar(uid: string, base64: string | null) {
+  if (!base64) {
+    await db().collection("avatars").doc(uid).delete();
+    await profiles().doc(uid).set({ photoVersion: 0 }, { merge: true });
+    return { photo: 0 };
+  }
+  const buf = Buffer.from(String(base64), "base64");
+  if (buf.length < 100 || buf.length > MAX_PHOTO) throw new HttpsError("invalid-argument", "That photo is too large.");
+  const jpeg = buf[0] === 0xff && buf[1] === 0xd8;
+  const png = buf[0] === 0x89 && buf[1] === 0x50;
+  if (!jpeg && !png) throw new HttpsError("invalid-argument", "Use a JPEG or PNG photo.");
+  const version = Date.now();
+  await db().collection("avatars").doc(uid).set({ data: buf, type: jpeg ? "image/jpeg" : "image/png", version });
+  await profiles().doc(uid).set({ photoVersion: version }, { merge: true });
+  return { photo: version };
+}
+
+export async function getAvatar(uid: string): Promise<{ data: Buffer; type: string } | null> {
+  const s = await db().collection("avatars").doc(clip(uid, 128)).get();
+  if (!s.exists) return null;
+  return { data: Buffer.from(s.get("data")), type: s.get("type") as string };
+}

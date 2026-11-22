@@ -394,4 +394,6 @@ export const sendChatMessage = userCall<{ uid: string; text: string; language?: 
 });
 export const registerDevice = userCall<{ id: string; name: string; model: string; os: string }>((d, c) => social.registerDevice(c.uid, d));
 export const listDevices = userCall<Record<string, never>>((_d, c) => social.listDevices(c.uid));
+export const setPrivacy = userCall<{ shareActivity: boolean }>((d, c) => social.setPrivacy(c.uid, d.shareActivity !== false));
+export const setAvatar = userCall<{ image?: string | null }>((d, c) => social.setAvatar(c.uid, d.image ?? null));
 export const removeDevice = userCall<{ id: string }>((d, c) => social.removeDevice(c.uid, String(d.id ?? "")));

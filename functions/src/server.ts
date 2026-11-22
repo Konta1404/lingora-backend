@@ -12,7 +12,7 @@ import express from "express";
 import { getAuth } from "firebase-admin/auth";
 import { HttpsError } from "firebase-functions/v2/https";
 import * as fns from "./index";
-import { profileByHandle } from "./social";
+import { profileByHandle, getAvatar } from "./social";
 
 type Callable = { run: (req: unknown) => unknown };
 
@@ -51,6 +51,8 @@ const CALLABLES: Record<string, Callable> = {
   registerDevice: fns.registerDevice,
   listDevices: fns.listDevices,
   removeDevice: fns.removeDevice,
+  setPrivacy: fns.setPrivacy,
+  setAvatar: fns.setAvatar,
 } as unknown as Record<string, Callable>;
 
 const HTTP_STATUS: Record<string, number> = {
@@ -81,6 +83,23 @@ app.get("/healthz", (_req, res) => {
 
 // OpenAI redirects the browser here after Sign in with ChatGPT.
 app.get("/chatgptCallback", (req, res) => (fns.chatgptCallback as unknown as express.RequestHandler)(req, res, () => undefined));
+
+// Profile photos, for signed-in users: GET /avatar/<uid>?v=<version> with "Authorization: Bearer <ID token>".
+app.get("/avatar/:uid", async (req, res) => {
+  const token = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
+  try {
+    await getAuth().verifyIdToken(token);
+  } catch {
+    res.status(401).end();
+    return;
+  }
+  const a = await getAvatar(String(req.params.uid)).catch(() => null);
+  if (!a) {
+    res.status(404).end();
+    return;
+  }
+  res.set("Cache-Control", "private, max-age=31536000, immutable").type(a.type).send(a.data);
+});
 
 // Invite links: https://<backend>/u/<handle> opens the app (lingora://add/<handle>).
 const esc = (t: string) => t.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);

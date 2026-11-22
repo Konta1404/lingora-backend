@@ -53,6 +53,7 @@ const CALLABLES: Record<string, Callable> = {
   removeDevice: fns.removeDevice,
   setPrivacy: fns.setPrivacy,
   setAvatar: fns.setAvatar,
+  courseUnit: fns.courseUnit,
 } as unknown as Record<string, Callable>;
 
 const HTTP_STATUS: Record<string, number> = {

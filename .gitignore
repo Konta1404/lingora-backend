@@ -7,3 +7,8 @@ functions/.secret.local
 functions/.env.local
 *-debug.log
 .tools/
+infra/.terraform/
+infra/*.tfstate*
+infra/.terraform.lock.hcl
+infra/*.json
+infra/*.plist

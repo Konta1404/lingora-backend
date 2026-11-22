@@ -49,15 +49,34 @@ function hueFor(uid: string): number {
   return parseInt(createHash("sha256").update(uid).digest("hex").slice(0, 4), 16) % 360;
 }
 
-/** Consecutive active days ending today (or yesterday, if today has no practice yet). */
-export function streakOf(activity: Record<string, number>, today: string): number {
+/** Consecutive active days ending today (or yesterday). A frozen day keeps the streak without adding to it. */
+export function streakOf(activity: Record<string, number>, today: string, frozen: string[] = []): number {
+  const ice = new Set(frozen);
   let d = (activity[today] ?? 0) > 0 ? today : addDays(today, -1);
   let n = 0;
-  while ((activity[d] ?? 0) > 0) {
+  for (let guard = 0; guard < 400; guard++) {
+    if ((activity[d] ?? 0) > 0) n++;
+    else if (!ice.has(d)) break;
+    d = addDays(d, -1);
+  }
+  return n;
+}
+
+/** Days in a row on which both people practised. */
+function pairStreak(a: DocumentData | undefined, b: DocumentData | undefined, today: string): number {
+  const aa = (a?.activity ?? {}) as Record<string, number>, bb = (b?.activity ?? {}) as Record<string, number>;
+  const both = (d: string) => (aa[d] ?? 0) > 0 && (bb[d] ?? 0) > 0;
+  let d = both(today) ? today : addDays(today, -1);
+  let n = 0;
+  while (both(d) && n < 400) {
     n++;
     d = addDays(d, -1);
   }
   return n;
+}
+
+function xpSince(p: DocumentData | undefined, from: string, to: string): number {
+  return Object.entries((p?.xpDays ?? {}) as Record<string, number>).filter(([d]) => d >= from && d <= to).reduce((s, [, v]) => s + v, 0);
 }
 
 function minutesSince(activity: Record<string, number>, from: string, to?: string): number {
@@ -81,7 +100,7 @@ function toDTO(uid: string, p: DocumentData | undefined, today: string, weekStar
     handle: p?.handle ?? "",
     hue: p?.hue ?? hueFor(uid),
     langs: p?.langs ?? [],
-    streak: streakOf(activity, today),
+    streak: streakOf(activity, today, visible ? ((p?.frozen ?? []) as string[]) : []),
     weekMinutes: minutesSince(activity, weekStart),
     practisedToday: (activity[today] ?? 0) > 0,
   };
@@ -176,7 +195,8 @@ const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
  * value per day, so retries and several devices never double-count.
  */
 export async function reportActivity(uid: string, d: {
-  day: string; days?: Record<string, number>; event?: { type: string; params?: Record<string, string> };
+  day: string; days?: Record<string, number>; xpDays?: Record<string, number>; frozen?: string[];
+  event?: { type: string; params?: Record<string, string> };
 }) {
   const today = day(d.day);
   const incoming = Object.entries(d.days ?? {})
@@ -193,11 +213,18 @@ export async function reportActivity(uid: string, d: {
     for (const [k, v] of incoming) activity[k] = Math.max(activity[k] ?? 0, v);
     const cutoff = addDays(today, -90);
     for (const k of Object.keys(activity)) if (k < cutoff) delete activity[k];
-    streak = streakOf(activity, today);
+    const xpDays = { ...((snap.get("xpDays") ?? {}) as Record<string, number>) };
+    for (const [k, v] of Object.entries(d.xpDays ?? {})) {
+      if (DAY.test(k) && k >= addDays(today, -14) && k <= addDays(today, 1)) xpDays[k] = Math.max(xpDays[k] ?? 0, Math.min(5000, Math.round(Number(v) || 0)));
+    }
+    for (const k of Object.keys(xpDays)) if (k < cutoff) delete xpDays[k];
+    const frozen = [...new Set([...((snap.get("frozen") ?? []) as string[]), ...(d.frozen ?? []).filter((f) => DAY.test(f))])]
+      .filter((f) => f >= addDays(today, -90)).sort().slice(-60);
+    streak = streakOf(activity, today, frozen);
     const last = (snap.get("lastMilestone") as number | undefined) ?? 0;
     const hit = MILESTONES.filter((m) => streak >= m && m > last).pop();
     if (hit && streak === hit) milestone = hit;
-    tx.set(ref, { activity, lastActiveDay: today, ...(milestone ? { lastMilestone: milestone } : {}) }, { merge: true });
+    tx.set(ref, { activity, xpDays, frozen, lastActiveDay: today, ...(milestone ? { lastMilestone: milestone } : {}) }, { merge: true });
   });
 
   const feed = ref.collection("feed");
@@ -328,6 +355,7 @@ export async function overview(uid: string, today: string, weekStart: string) {
     const at = c?.get("lastAt") as Timestamp | undefined;
     return {
       ...dto(f),
+      friendStreak: sharesActivity(ps.get(f)) ? pairStreak(ps.get(uid), ps.get(f), today) : 0,
       unread: (c?.exists ? (c.get(`unread.${uid}`) as number | undefined) : 0) ?? 0,
       lastMessage: c?.exists ? ((c.get("lastText") as string | undefined) ?? null) : null,
       lastMessageAt: at ? at.toMillis() : null,
@@ -568,4 +596,85 @@ export async function getAvatar(uid: string): Promise<{ data: Buffer; type: stri
   const s = await db().collection("avatars").doc(clip(uid, 128)).get();
   if (!s.exists) return null;
   return { data: Buffer.from(s.get("data")), type: s.get("type") as string };
+}
+
+// ---------- Weekly leagues ----------
+
+export const TIERS = ["Bronze", "Silver", "Gold", "Sapphire", "Ruby", "Emerald", "Amethyst", "Pearl", "Obsidian", "Diamond"];
+const LEAGUE_SIZE = 30, PROMOTE = 7, DEMOTE = 5;
+const leagues = () => db().collection("leagues");
+
+function ranked(memberIds: string[], ps: Map<string, DocumentData>, week: string) {
+  const end = addDays(week, 6);
+  return memberIds.map((m) => ({ uid: m, xp: xpSince(ps.get(m), week, end) })).sort((a, b) => b.xp - a.xp);
+}
+
+type LeagueRef = { id: string; tier: number; week: string; result?: string | null };
+
+/** Where last week's league left you: promoted (top 7 with XP), demoted (bottom 5 or no XP) or the same tier. */
+async function nextTier(prev: LeagueRef, uid: string): Promise<{ tier: number; result: string | null }> {
+  const lg = await leagues().doc(prev.id).get();
+  if (!lg.exists) return { tier: prev.tier, result: null };
+  const members = (lg.get("members") ?? []) as string[];
+  const ps = await getProfiles(members);
+  const order = ranked(members, ps, prev.week);
+  const rank = order.findIndex((r) => r.uid === uid);
+  const mine = order[rank];
+  if (mine && mine.xp > 0 && rank < PROMOTE && prev.tier < TIERS.length - 1) return { tier: prev.tier + 1, result: "promoted" };
+  if (prev.tier > 0 && (!mine || mine.xp === 0 || (members.length >= 10 && rank >= members.length - DEMOTE))) {
+    return { tier: prev.tier - 1, result: "demoted" };
+  }
+  return { tier: prev.tier, result: "stayed" };
+}
+
+export async function leagueStatus(uid: string, weekStart: string, today: string) {
+  const week = day(weekStart);
+  const ref = profiles().doc(uid);
+  const me = (await ref.get()).data() ?? {};
+  let current = me.league as LeagueRef | undefined;
+
+  if (!current || current.week !== week) {
+    let tier = current?.tier ?? 0;
+    let result: string | null = null;
+    if (current && current.week === addDays(week, -7)) ({ tier, result } = await nextTier(current, uid));
+    else if (current) tier = Math.max(0, tier - 1);   // skipped a whole week
+    if (xpSince(me, week, addDays(week, 6)) <= 0) {
+      return { joined: false, tier, tierName: TIERS[tier], week, previous: result, members: [] };
+    }
+    // Join an open league of this tier, or open a new one.
+    const openRef = db().collection("leagueOpen").doc(`${week}_${tier}`);
+    const id = await db().runTransaction(async (tx) => {
+      const open = await tx.get(openRef);
+      let lid = open.exists ? (open.get("id") as string) : "";
+      if (lid) {
+        const lg = await tx.get(leagues().doc(lid));
+        if (!lg.exists || ((lg.get("members") ?? []) as string[]).length >= LEAGUE_SIZE) lid = "";
+      }
+      if (!lid) {
+        lid = leagues().doc().id;
+        tx.set(leagues().doc(lid), { week, tier, members: [uid], createdAt: FieldValue.serverTimestamp() });
+        tx.set(openRef, { id: lid });
+      } else {
+        tx.update(leagues().doc(lid), { members: FieldValue.arrayUnion(uid) });
+      }
+      return lid;
+    });
+    current = { id, tier, week, result };
+    await ref.set({ league: current }, { merge: true });
+  }
+
+  const lg = await leagues().doc(current.id).get();
+  const members = (lg.get("members") ?? [uid]) as string[];
+  const ps = await getProfiles(members);
+  const order = ranked(members, ps, week);
+  return {
+    joined: true, tier: current.tier, tierName: TIERS[current.tier], week, previous: current.result ?? null,
+    promote: current.tier < TIERS.length - 1 ? PROMOTE : 0, demote: current.tier > 0 && members.length >= 10 ? DEMOTE : 0,
+    members: order.map((r) => ({
+      uid: r.uid, xp: r.xp, me: r.uid === uid,
+      name: ps.get(r.uid)?.name ?? "", hue: ps.get(r.uid)?.hue ?? hueFor(r.uid),
+      photo: (ps.get(r.uid)?.photoVersion as number | undefined) ?? 0,
+      streak: streakOf((ps.get(r.uid)?.activity ?? {}) as Record<string, number>, today, (ps.get(r.uid)?.frozen ?? []) as string[]),
+    })),
+  };
 }

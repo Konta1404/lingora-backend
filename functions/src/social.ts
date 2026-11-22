@@ -197,6 +197,7 @@ const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
  */
 export async function reportActivity(uid: string, d: {
   day: string; days?: Record<string, number>; xpDays?: Record<string, number>; frozen?: string[];
+  stats?: Record<string, unknown>;
   event?: { type: string; params?: Record<string, string> };
 }) {
   const today = day(d.day);
@@ -225,7 +226,8 @@ export async function reportActivity(uid: string, d: {
     const last = (snap.get("lastMilestone") as number | undefined) ?? 0;
     const hit = MILESTONES.filter((m) => streak >= m && m > last).pop();
     if (hit && streak === hit) milestone = hit;
-    tx.set(ref, { activity, xpDays, frozen, lastActiveDay: today, ...(milestone ? { lastMilestone: milestone } : {}) }, { merge: true });
+    const stats = d.stats ? cleanStats(d.stats) : undefined;
+    tx.set(ref, { activity, xpDays, frozen, lastActiveDay: today, ...(stats ? { stats } : {}), ...(milestone ? { lastMilestone: milestone } : {}) }, { merge: true });
   });
 
   const feed = ref.collection("feed");
@@ -677,5 +679,38 @@ export async function leagueStatus(uid: string, weekStart: string, today: string
       photo: (ps.get(r.uid)?.photoVersion as number | undefined) ?? 0,
       streak: streakOf((ps.get(r.uid)?.activity ?? {}) as Record<string, number>, today, (ps.get(r.uid)?.frozen ?? []) as string[]),
     })),
+  };
+}
+
+// ---------- Public profile ----------
+
+/** Lifetime numbers the app reports (the server only keeps 90 days of activity). */
+function cleanStats(raw: Record<string, unknown>) {
+  const n = (k: string) => Math.max(0, Math.min(10_000_000, Math.round(Number(raw[k]) || 0)));
+  const ach: Record<string, number> = {};
+  for (const [k, v] of Object.entries((raw.achievements ?? {}) as Record<string, unknown>).slice(0, 20)) {
+    ach[clip(k, 20)] = Math.max(0, Math.min(10, Math.round(Number(v) || 0)));
+  }
+  return { totalXP: n("totalXP"), bestStreak: n("bestStreak"), lessons: n("lessons"), words: n("words"), stories: n("stories"), achievements: ach };
+}
+
+export async function publicProfile(uid: string, d: { uid?: string; handle?: string; day: string; weekStart: string }) {
+  let target = clip(d.uid, 128);
+  if (!target && d.handle) target = (await profileByHandle(d.handle))?.uid ?? "";
+  if (!target) throw new HttpsError("not-found", "No one with that username.");
+  const snap = await profiles().doc(target).get();
+  if (!snap.exists) throw new HttpsError("not-found", "No one with that username.");
+  const p = snap.data()!;
+  const today = day(d.day);
+  const base = toDTO(target, p, today, day(d.weekStart), uid);
+  const shares = sharesActivity(p) || target === uid;
+  const rel = target === uid ? "me" : (await withRelations(uid, [base]))[0].relation;
+  const friendsCount = (await friendships().where("users", "array-contains", target).get()).docs.filter((x) => x.get("status") === "accepted").length;
+  const created = p.createdAt as Timestamp | undefined;
+  return {
+    ...base, relation: rel, friendsCount,
+    joined: created ? created.toMillis() : null,
+    league: p.league ? (p.league.tier as number) : null,
+    stats: shares ? (p.stats ?? null) : null,
   };
 }

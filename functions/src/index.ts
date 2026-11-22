@@ -353,7 +353,7 @@ type Days = { day: string; weekStart: string };
 
 export const profileSync = userCall<{ name?: string; langs?: string[] }>((d, c) => social.syncProfile(c.uid, c.email, d));
 export const setHandle = userCall<{ handle: string }>((d, c) => social.setHandle(c.uid, String(d.handle ?? "")));
-export const reportActivity = userCall<{ day: string; days?: Record<string, number>; xpDays?: Record<string, number>; frozen?: string[]; event?: { type: string; params?: Record<string, string> } }>(
+export const reportActivity = userCall<{ day: string; days?: Record<string, number>; xpDays?: Record<string, number>; frozen?: string[]; stats?: Record<string, unknown>; event?: { type: string; params?: Record<string, string> } }>(
   (d, c) => social.reportActivity(c.uid, d));
 export const searchUsers = userCall<Days & { query: string }>((d, c) => social.searchUsers(c.uid, String(d.query ?? ""), d.day, d.weekStart));
 export const matchContacts = userCall<Days & { hashes: string[] }>((d, c) =>
@@ -396,6 +396,7 @@ export const sendChatMessage = userCall<{ uid: string; text: string; language?: 
 });
 export const registerDevice = userCall<{ id: string; name: string; model: string; os: string }>((d, c) => social.registerDevice(c.uid, d));
 export const listDevices = userCall<Record<string, never>>((_d, c) => social.listDevices(c.uid));
+export const publicProfile = userCall<{ uid?: string; handle?: string; day: string; weekStart: string }>((d, c) => social.publicProfile(c.uid, d));
 export const leagueStatus = userCall<{ weekStart: string; day: string }>((d, c) => social.leagueStatus(c.uid, d.weekStart, d.day));
 export const setPrivacy = userCall<{ shareActivity: boolean }>((d, c) => social.setPrivacy(c.uid, d.shareActivity !== false));
 export const setAvatar = userCall<{ image?: string | null }>((d, c) => social.setAvatar(c.uid, d.image ?? null));

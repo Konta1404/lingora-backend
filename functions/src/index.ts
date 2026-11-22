@@ -17,6 +17,7 @@ import { setGlobalOptions } from "firebase-functions/v2";
 import { complete, obj, str, arr, bool, int, taskSchema, AIError, AIClient, TASK_TYPES } from "./openai";
 import { translateWords as translate, checkTranslation as checkTr, vocab } from "./vocab";
 import * as chatgpt from "./chatgpt";
+import * as social from "./social";
 
 // On Firebase this needs no config. Elsewhere (Render), pass the service-account JSON in FIREBASE_SERVICE_ACCOUNT.
 const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -331,3 +332,66 @@ export const checkTranslation = callable<
   if (!vocab().has(String(d.id))) throw new HttpsError("invalid-argument", "Unknown word.");
   return checkTr(String(d.id), clip(d.answer, 120), d.targetLanguage || "en", (d.accepted ?? []).map((a) => clip(a, 60)), ai);
 });
+
+// ---------- Social: profiles, friends, feed, challenges, chat, devices ----------
+
+type Ctx = { uid: string; email?: string };
+/** A signed-in callable that doesn't need ChatGPT. */
+function userCall<I>(handler: (data: I, ctx: Ctx) => Promise<unknown>) {
+  return onCall({ secrets: SECRETS }, async (req) => {
+    const uid = requireUser(req);
+    try {
+      return await handler((req.data ?? {}) as I, { uid, email: req.auth?.token?.email as string | undefined });
+    } catch (e) {
+      throw toHttps(e);
+    }
+  });
+}
+type Days = { day: string; weekStart: string };
+
+export const profileSync = userCall<{ name?: string; langs?: string[] }>((d, c) => social.syncProfile(c.uid, c.email, d));
+export const setHandle = userCall<{ handle: string }>((d, c) => social.setHandle(c.uid, String(d.handle ?? "")));
+export const reportActivity = userCall<{ day: string; minutes?: number; event?: { type: string; params?: Record<string, string> } }>(
+  (d, c) => social.reportActivity(c.uid, d));
+export const searchUsers = userCall<Days & { query: string }>((d, c) => social.searchUsers(c.uid, String(d.query ?? ""), d.day, d.weekStart));
+export const matchContacts = userCall<Days & { hashes: string[] }>((d, c) =>
+  social.matchContacts(c.uid, (d.hashes ?? []).map(String), d.day, d.weekStart));
+export const sendFriendRequest = userCall<{ uid?: string; handle?: string }>((d, c) => social.sendFriendRequest(c.uid, d));
+export const respondFriendRequest = userCall<{ uid: string; accept: boolean }>((d, c) =>
+  social.respondFriendRequest(c.uid, String(d.uid ?? ""), !!d.accept));
+export const removeFriend = userCall<{ uid: string }>((d, c) => social.removeFriend(c.uid, String(d.uid ?? "")));
+export const friendsOverview = userCall<Days>((d, c) => social.overview(c.uid, d.day, d.weekStart));
+export const cheer = userCall<{ owner: string; id: string }>((d, c) => social.cheer(c.uid, String(d.owner ?? ""), String(d.id ?? "")));
+export const nudge = userCall<{ uid: string; day: string }>((d, c) => social.nudge(c.uid, String(d.uid ?? ""), d.day));
+export const markNudgesSeen = userCall<{ ids: string[] }>((d, c) => social.markNudgesSeen(c.uid, (d.ids ?? []).map(String)));
+export const createChallenge = userCall<Parameters<typeof social.createChallenge>[1]>((d, c) => social.createChallenge(c.uid, d));
+export const respondChallenge = userCall<{ id: string; accept: boolean }>((d, c) =>
+  social.respondChallenge(c.uid, String(d.id ?? ""), !!d.accept));
+export const leaveChallenge = userCall<{ id: string }>((d, c) => social.leaveChallenge(c.uid, String(d.id ?? "")));
+export const sharePlan = userCall<{ lang: string; title: string; plan: string }>((d, c) => social.sharePlan(c.uid, d));
+export const getSharedPlan = userCall<{ planId: string }>((d, c) => social.getSharedPlan(c.uid, String(d.planId ?? "")));
+export const chatMessages = userCall<{ uid: string }>((d, c) => social.chatMessages(c.uid, String(d.uid ?? "")));
+export const sendChatMessage = userCall<{ uid: string; text: string; language?: Lang; uiLanguage?: string }>(async (d, c) => {
+  let correct: ((t: string) => Promise<{ wrong: string; right: string; note: string } | null>) | null = null;
+  if (isConfigured() && d.language?.name) {
+    try {
+      const ai = await chatgpt.accessFor(cfg(), c.uid);
+      correct = async (t) => {
+        const r = (await complete(ai, {
+          name: "correction",
+          schema: obj({ hasCorrection: bool(), wrong: str("Exact wrong fragment, or empty."), right: str("Corrected fragment, or empty."), note: str("One short explanation, or empty.") }),
+          system: TONE,
+          user: `The learner sent this ${clip(d.language?.name, 60)} message to a friend: "${clip(t, 500)}". ` +
+            `Point out at most one real mistake. Ignore style and punctuation. If the message isn't in ${clip(d.language?.name, 60)}, report no correction.\n${inLang(d)}`,
+        })) as { hasCorrection: boolean; wrong: string; right: string; note: string };
+        return r.hasCorrection && r.wrong && r.right ? { wrong: r.wrong, right: r.right, note: r.note } : null;
+      };
+    } catch {
+      correct = null; // No ChatGPT plan connected: send without a correction.
+    }
+  }
+  return social.sendChatMessage(c.uid, String(d.uid ?? ""), String(d.text ?? ""), correct);
+});
+export const registerDevice = userCall<{ id: string; name: string; model: string; os: string }>((d, c) => social.registerDevice(c.uid, d));
+export const listDevices = userCall<Record<string, never>>((_d, c) => social.listDevices(c.uid));
+export const removeDevice = userCall<{ id: string }>((d, c) => social.removeDevice(c.uid, String(d.id ?? "")));

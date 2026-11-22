@@ -12,6 +12,7 @@ import express from "express";
 import { getAuth } from "firebase-admin/auth";
 import { HttpsError } from "firebase-functions/v2/https";
 import * as fns from "./index";
+import { profileByHandle } from "./social";
 
 type Callable = { run: (req: unknown) => unknown };
 
@@ -28,6 +29,28 @@ const CALLABLES: Record<string, Callable> = {
   chatgptAuthFinish: fns.chatgptAuthFinish,
   chatgptStatus: fns.chatgptStatus,
   chatgptDisconnect: fns.chatgptDisconnect,
+  profileSync: fns.profileSync,
+  setHandle: fns.setHandle,
+  reportActivity: fns.reportActivity,
+  searchUsers: fns.searchUsers,
+  matchContacts: fns.matchContacts,
+  sendFriendRequest: fns.sendFriendRequest,
+  respondFriendRequest: fns.respondFriendRequest,
+  removeFriend: fns.removeFriend,
+  friendsOverview: fns.friendsOverview,
+  cheer: fns.cheer,
+  nudge: fns.nudge,
+  markNudgesSeen: fns.markNudgesSeen,
+  createChallenge: fns.createChallenge,
+  respondChallenge: fns.respondChallenge,
+  leaveChallenge: fns.leaveChallenge,
+  sharePlan: fns.sharePlan,
+  getSharedPlan: fns.getSharedPlan,
+  chatMessages: fns.chatMessages,
+  sendChatMessage: fns.sendChatMessage,
+  registerDevice: fns.registerDevice,
+  listDevices: fns.listDevices,
+  removeDevice: fns.removeDevice,
 } as unknown as Record<string, Callable>;
 
 const HTTP_STATUS: Record<string, number> = {
@@ -58,6 +81,26 @@ app.get("/healthz", (_req, res) => {
 
 // OpenAI redirects the browser here after Sign in with ChatGPT.
 app.get("/chatgptCallback", (req, res) => (fns.chatgptCallback as unknown as express.RequestHandler)(req, res, () => undefined));
+
+// Invite links: https://<backend>/u/<handle> opens the app (lingora://add/<handle>).
+const esc = (t: string) => t.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+app.get("/u/:handle", async (req, res) => {
+  const handle = String(req.params.handle).toLowerCase().replace(/[^a-z0-9._]/g, "").slice(0, 20);
+  let name = "";
+  try {
+    name = (await profileByHandle(handle))?.name ?? "";
+  } catch {
+    name = "";
+  }
+  const deep = `lingora://add/${handle}`;
+  res.set("Cache-Control", "no-store").type("html").send(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Lingora</title>
+<style>body{font-family:-apple-system,system-ui,sans-serif;background:#f6f1e8;color:#1d1a16;display:grid;place-items:center;min-height:100vh;margin:0}
+main{max-width:340px;padding:32px;text-align:center}a{display:inline-block;margin-top:20px;padding:14px 22px;border-radius:999px;background:#1d1a16;color:#fff;text-decoration:none;font-weight:600}</style>
+</head><body><main><h1>Lingora</h1><p>${name ? `<b>${esc(name)}</b> (@${esc(handle)}) wants to practise languages with you.` : `Add @${esc(handle)} on Lingora.`}</p>
+<a href="${deep}">Open in Lingora</a><p style="font-size:13px;opacity:.6;margin-top:24px">Install Lingora on your iPhone first, then tap the button.</p></main>
+<script>location.href=${JSON.stringify(deep)}</script></body></html>`);
+});
 
 app.post("/:name", async (req, res) => {
   const fn = CALLABLES[req.params.name];

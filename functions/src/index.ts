@@ -9,7 +9,7 @@
  *   openssl rand -base64 32 | firebase functions:secrets:set TOKEN_ENC_KEY
  *   and CHATGPT_CLIENT_ID in functions/.env.<project-id>
  */
-import { initializeApp } from "firebase-admin/app";
+import { initializeApp, cert } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { onCall, onRequest, HttpsError, CallableRequest } from "firebase-functions/v2/https";
 import { defineSecret, defineString, defineInt } from "firebase-functions/params";
@@ -18,7 +18,10 @@ import { complete, obj, str, arr, bool, int, taskSchema, AIError, AIClient, TASK
 import { translateWords as translate, checkTranslation as checkTr, vocab } from "./vocab";
 import * as chatgpt from "./chatgpt";
 
-initializeApp();
+// On Firebase this needs no config. Elsewhere (Render), pass the service-account JSON in FIREBASE_SERVICE_ACCOUNT.
+const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
+initializeApp(serviceAccount ? { credential: cert(JSON.parse(serviceAccount)) } : undefined);
+if (serviceAccount && !process.env.GCLOUD_PROJECT) process.env.GCLOUD_PROJECT = JSON.parse(serviceAccount).project_id;
 const REGION = "europe-west1";
 setGlobalOptions({ region: REGION, maxInstances: 10 });
 

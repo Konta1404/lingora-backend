@@ -1,0 +1,36 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Deploy: Render dashboard → New → Blueprint → pick this repo. Render asks for the values marked sync: false.
+services:
+  - type: web
+    name: lingora-backend
+    runtime: node
+    plan: free
+    region: frankfurt
+    rootDir: functions
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Paste the whole service-account JSON (Firebase console → Project settings → Service accounts → Generate new private key).
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
+      # 32 random bytes, base64 — encrypts users' ChatGPT tokens. Generate with: openssl rand -base64 32
+      - key: TOKEN_ENC_KEY
+        generateValue: true
+      # From OpenAI once Sign in with ChatGPT is approved. Leave CHATGPT_CLIENT_ID as not-set until then.
+      - key: CHATGPT_CLIENT_ID
+        value: not-set
+      - key: CHATGPT_CLIENT_SECRET
+        sync: false
+      # https://<your-service>.onrender.com/chatgptCallback — register the same URL with OpenAI.
+      - key: CHATGPT_CALLBACK_URL
+        sync: false
+      - key: CHATGPT_DISCOVERY_URL
+        value: https://auth.openai.com/.well-known/openid-configuration
+      - key: CHATGPT_MODELS
+        value: gpt-5-mini,gpt-5,gpt-6.1-sol
+      - key: DAILY_AI_LIMIT
+        value: "300"

@@ -10,14 +10,17 @@
     "build:watch": "tsc --watch",
     "serve": "npm run build && firebase emulators:start --only functions,firestore,auth",
     "deploy": "firebase deploy --only functions,firestore",
-    "logs": "firebase functions:log"
+    "logs": "firebase functions:log",
+    "start": "node lib/src/server.js"
   },
   "dependencies": {
     "firebase-admin": "^13.0.0",
     "firebase-functions": "^6.0.0",
-    "jose": "^6.2.18"
+    "jose": "^6.2.18",
+    "express": "^4.21.0"
   },
   "devDependencies": {
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "@types/express": "^4.17.21"
   }
 }

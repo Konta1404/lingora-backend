@@ -19,7 +19,7 @@ const HANDLE = /^[a-z0-9._]{3,20}$/;
 
 export interface ProfileDTO {
   uid: string; name: string; handle: string; hue: number; langs: string[];
-  streak: number; weekMinutes: number; practisedToday: boolean;
+  streak: number; weekMinutes: number; weekXP: number; practisedToday: boolean;
   /** False when the person hides their activity from friends (stats are then zero for others). */
   sharesActivity: boolean;
   /** Version of the profile photo (0 = none); fetch it from GET /avatar/<uid>?v=<photo>. */
@@ -102,6 +102,7 @@ function toDTO(uid: string, p: DocumentData | undefined, today: string, weekStar
     langs: p?.langs ?? [],
     streak: streakOf(activity, today, visible ? ((p?.frozen ?? []) as string[]) : []),
     weekMinutes: minutesSince(activity, weekStart),
+    weekXP: visible ? xpSince(p, weekStart, addDays(weekStart, 6)) : 0,
     practisedToday: (activity[today] ?? 0) > 0,
   };
 }

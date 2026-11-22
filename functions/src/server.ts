@@ -55,6 +55,8 @@ const CALLABLES: Record<string, Callable> = {
   setAvatar: fns.setAvatar,
   courseUnit: fns.courseUnit,
   leagueStatus: fns.leagueStatus,
+  explainAnswer: fns.explainAnswer,
+  callFeedback: fns.callFeedback,
 } as unknown as Record<string, Callable>;
 
 const HTTP_STATUS: Record<string, number> = {

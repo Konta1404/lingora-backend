@@ -261,7 +261,7 @@ export const checkWriting = callable<
 // ---------- tutor & chat ----------
 
 export const tutorTurn = callable<
-  { language: Lang; level: string; scene: string; history: { role: string; text: string }[]; uiLanguage?: string },
+  { language: Lang; level: string; scene: string; history: { role: string; text: string }[]; memory?: string[]; uiLanguage?: string },
   unknown
 >(async (d, ai) => {
   const name = clip(d.language?.name, 60);
@@ -279,10 +279,12 @@ export const tutorTurn = callable<
       note: str("One short explanation in the learner's interface language, or empty."),
       reply: str(`Your next in-character line in ${name}, suited to the learner's level.`),
       suggestions: arr(str(`A short reply the learner could send next, in ${name}.`), "Exactly 3."),
+      remember: str("A short new fact about the learner from their last message worth remembering next time (name, job, family, hobby, plans), in English, or empty."),
     }),
     system: TONE,
     user:
       `Roleplay scene: ${clip(d.scene, 120)}. You play the other person and stay in character in ${name}.\n` +
+      ((d.memory ?? []).length ? `What you remember about the learner from earlier chats: ${(d.memory ?? []).slice(-15).map((m) => clip(m, 120)).join("; ")}. Use it naturally when it fits.\n` : "") +
       `Learner level: ${clip(d.level, 4)}. Keep replies to one or two short sentences.\nConversation so far:\n${transcript}\n${inLang(d)}`,
   });
 });
@@ -445,4 +447,39 @@ export const courseUnit = onCall({ secrets: SECRETS, timeoutSeconds: 120 }, asyn
   } catch (e) {
     throw toHttps(e);
   }
+});
+
+// ---------- Explain My Answer & call feedback ----------
+
+export const explainAnswer = callable<
+  { language: Lang; task: string; prompt: string; expected: string; answer: string; uiLanguage?: string },
+  unknown
+>(async (d, ai) =>
+  complete(ai, {
+    name: "explanation",
+    schema: obj({ explanation: str("Two or three short sentences: why the expected answer is right and what was wrong in the learner's answer.") }),
+    system: TONE,
+    user:
+      `A learner of ${langLine(d.language)} did this exercise: ${clip(d.task, 120)}.\nPrompt: ${clip(d.prompt, 300)}\n` +
+      `Expected answer: ${clip(d.expected, 300)}\nLearner's answer: ${clip(d.answer, 300) || "(none)"}\n` +
+      `Explain simply, mention the grammar rule if there is one.\n${inLang(d)}`,
+  }),
+);
+
+export const callFeedback = callable<
+  { language: Lang; level: string; history: { role: string; text: string }[]; uiLanguage?: string },
+  unknown
+>(async (d, ai) => {
+  const transcript = (d.history ?? []).slice(-40).filter((m) => m.role === "ai" || m.role === "me")
+    .map((m) => `${m.role === "ai" ? "Tutor" : "Learner"}: ${clip(m.text, 400)}`).join("\n");
+  return complete(ai, {
+    name: "call_feedback",
+    schema: obj({
+      summary: str("One or two encouraging sentences about how the learner did."),
+      strengths: arr(str("Something the learner did well."), "One to three."),
+      fixes: arr(obj({ wrong: str("Exact wrong phrase."), right: str("Corrected phrase."), note: str("Short explanation.") }), "Up to three most useful corrections."),
+    }),
+    system: TONE,
+    user: `Spoken practice call in ${langLine(d.language)}, learner level ${clip(d.level, 4)}.\nTranscript:\n${transcript}\n${inLang(d)}`,
+  });
 });

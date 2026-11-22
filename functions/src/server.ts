@@ -56,6 +56,7 @@ const CALLABLES: Record<string, Callable> = {
   courseUnit: fns.courseUnit,
   leagueStatus: fns.leagueStatus,
   publicProfile: fns.publicProfile,
+  sendFeedback: fns.sendFeedback,
   explainAnswer: fns.explainAnswer,
   callFeedback: fns.callFeedback,
 } as unknown as Record<string, Callable>;

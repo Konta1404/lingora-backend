@@ -484,3 +484,15 @@ export const callFeedback = callable<
     user: `Spoken practice call in ${langLine(d.language)}, learner level ${clip(d.level, 4)}.\nTranscript:\n${transcript}\n${inLang(d)}`,
   });
 });
+
+// ---------- Feedback ----------
+
+export const sendFeedback = userCall<{ text: string; app?: string; device?: string; uiLanguage?: string }>(async (d, c) => {
+  const text = clip(d.text, 4000);
+  if (!text) throw new HttpsError("invalid-argument", "Empty message.");
+  await getFirestore().collection("feedback").add({
+    uid: c.uid, email: c.email ?? null, text, app: clip(d.app, 40), device: clip(d.device, 80),
+    uiLanguage: clip(d.uiLanguage, 20), createdAt: FieldValue.serverTimestamp(),
+  });
+  return { ok: true };
+});

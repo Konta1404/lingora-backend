@@ -161,18 +161,24 @@ export async function setHandle(uid: string, wanted: string) {
 const FEED_TYPES = new Set(["lesson", "roleplay", "vocab", "plan"]);
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 
+/**
+ * The app sends its own per-day minute totals (`days`, recent days only). The server keeps the larger
+ * value per day, so retries and several devices never double-count.
+ */
 export async function reportActivity(uid: string, d: {
-  day: string; minutes?: number; event?: { type: string; params?: Record<string, string> };
+  day: string; days?: Record<string, number>; event?: { type: string; params?: Record<string, string> };
 }) {
   const today = day(d.day);
-  const minutes = Math.max(0, Math.min(240, Math.round(Number(d.minutes) || 0)));
+  const incoming = Object.entries(d.days ?? {})
+    .filter(([k]) => DAY.test(k) && k <= addDays(today, 1) && k >= addDays(today, -14))
+    .map(([k, v]) => [k, Math.max(0, Math.min(1440, Math.round(Number(v) || 0)))] as const);
   const ref = profiles().doc(uid);
   let streak = 0;
   let milestone: number | null = null;
   await db().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const activity = { ...((snap.get("activity") ?? {}) as Record<string, number>) };
-    activity[today] = (activity[today] ?? 0) + minutes;
+    for (const [k, v] of incoming) activity[k] = Math.max(activity[k] ?? 0, v);
     const cutoff = addDays(today, -90);
     for (const k of Object.keys(activity)) if (k < cutoff) delete activity[k];
     streak = streakOf(activity, today);

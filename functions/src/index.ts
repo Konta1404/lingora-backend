@@ -410,13 +410,15 @@ export const removeDevice = userCall<{ id: string }>((d, c) => social.removeDevi
  */
 export const courseUnit = onCall({ secrets: SECRETS, timeoutSeconds: 120 }, async (req) => {
   const uid = requireUser(req);
-  const d = (req.data ?? {}) as { language?: Lang; level?: string; index?: number; previous?: string[] };
+  const d = (req.data ?? {}) as { language?: Lang; level?: string; index?: number; previous?: string[]; topic?: string; topicId?: string };
   const name = clip(d.language?.name, 60);
   const key = clip((d.language as { key?: string } | undefined)?.key, 40).replace(/[^a-zA-Z0-9-]/g, "") || name.toLowerCase();
-  const level = /^(A1|A2|B1|B2|C1)$/.test(String(d.level)) ? String(d.level) : "A1";
+  const level = /^(A1|A2|B1|B2|C1|C2)$/.test(String(d.level)) ? String(d.level) : "A1";
+  const topic = clip(d.topic, 120);
+  const topicId = clip(d.topicId, 60).replace(/[^a-z0-9-]/g, "");
   const index = Math.max(0, Math.min(200, Math.round(Number(d.index) || 0)));
   if (!name) throw new HttpsError("invalid-argument", "Missing language.");
-  const ref = getFirestore().collection("courseUnits").doc(`${key}-${level}-${index}`);
+  const ref = getFirestore().collection("courseUnits").doc(topicId ? `${key}-${topicId}` : `${key}-${level}-${index}`);
   const cached = await ref.get();
   if (cached.exists) return cached.get("unit");
   try {
@@ -433,12 +435,15 @@ export const courseUnit = onCall({ secrets: SECRETS, timeoutSeconds: 120 }, asyn
         sentences: arr(item, "Exactly 6 short sentences using mostly this unit's and earlier words."),
       }),
       system: TONE,
-      user: `Write unit ${index + 1} of a ${langLine(d.language as Lang)} course for level ${level}. ` +
-        `Earlier units: ${(d.previous ?? []).slice(-30).map((p) => clip(p, 60)).join("; ") || "none"}. ` +
-        "Pick the next most useful everyday topic, not repeating earlier ones. Keep sentences short and natural for the level.",
+      user: topic
+        ? `Write a ${langLine(d.language as Lang)} course unit on the topic "${topic}" for CEFR level ${level}. ` +
+          "Choose the most useful words and sentences for that topic at that level; sentences short and natural for the level, harder words for higher levels."
+        : `Write unit ${index + 1} of a ${langLine(d.language as Lang)} course for level ${level}. ` +
+          `Earlier units: ${(d.previous ?? []).slice(-30).map((p) => clip(p, 60)).join("; ") || "none"}. ` +
+          "Pick the next most useful everyday topic, not repeating earlier ones. Keep sentences short and natural for the level.",
     }) as { title: string; tip: string; words: { t: string; en: string }[]; sentences: { t: string; en: string }[] };
     const out = {
-      id: `${key}-${level}-${index}`, title: clip(unit.title, 60), tip: clip(unit.tip, 300),
+      id: topicId ? `${key}-${topicId}` : `${key}-${level}-${index}`, title: clip(unit.title, 60), tip: clip(unit.tip, 300), topic: topicId || null,
       words: unit.words.slice(0, 10).map((w) => ({ t: clip(w.t, 80), en: clip(w.en, 80) })),
       sentences: unit.sentences.slice(0, 8).map((w) => ({ t: clip(w.t, 160), en: clip(w.en, 160) })),
     };

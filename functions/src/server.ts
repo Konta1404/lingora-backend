@@ -153,6 +153,21 @@ a{display:inline-block;margin-top:16px;padding:14px 22px;border-radius:999px;bac
 <a href="${deep}">Open in Lingora</a><p class="m" style="margin-top:24px">Install Lingora on your iPhone first, then tap the button.</p></main></body></html>`);
 });
 
+// The Firebase client SDKs send 64-bit integers as {"@type": ".../google.protobuf.Int64Value", "value": "21"}.
+// Firebase's own callable runtime unwraps them; this server has to do it itself.
+function decodeCallable(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(decodeCallable);
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    const t = o["@type"];
+    if (typeof t === "string" && t.endsWith("Int64Value") && "value" in o) return Number(o.value);
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(o)) out[k] = decodeCallable(x);
+    return out;
+  }
+  return v;
+}
+
 app.post("/:name", async (req, res) => {
   const fn = CALLABLES[req.params.name];
   if (!fn) {
@@ -170,7 +185,7 @@ app.post("/:name", async (req, res) => {
         throw new HttpsError("unauthenticated", "Your session expired. Sign in again.");
       }
     }
-    const result = await fn.run({ data: req.body?.data ?? {}, auth, rawRequest: req, acceptsStreaming: false });
+    const result = await fn.run({ data: decodeCallable(req.body?.data ?? {}), auth, rawRequest: req, acceptsStreaming: false });
     res.json({ result: result ?? null });
   } catch (e) {
     const err = e instanceof HttpsError ? e : new HttpsError("internal", e instanceof Error ? e.message : String(e));

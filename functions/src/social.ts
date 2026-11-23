@@ -714,3 +714,33 @@ export async function publicProfile(uid: string, d: { uid?: string; handle?: str
     stats: shares ? (p.stats ?? null) : null,
   };
 }
+
+/** What the shared /u/<handle> web page shows: the same numbers as the in-app profile, minus anything private. */
+export async function webProfile(handle: string) {
+  const found = await profileByHandle(handle);
+  if (!found) return null;
+  const snap = await profiles().doc(found.uid).get();
+  const p = snap.data()!;
+  const today = new Date().toISOString().slice(0, 10);
+  const shares = sharesActivity(p);
+  const activity = shares ? ((p.activity ?? {}) as Record<string, number>) : {};
+  const friendsCount = (await friendships().where("users", "array-contains", found.uid).get()).docs.filter((x) => x.get("status") === "accepted").length;
+  const created = p.createdAt as Timestamp | undefined;
+  const stats = shares ? ((p.stats ?? {}) as Record<string, unknown>) : null;
+  const ach = (stats?.achievements ?? {}) as Record<string, number>;
+  return {
+    name: (p.name as string) ?? "Lingora learner",
+    handle: (p.handle as string) ?? handle,
+    hue: (p.hue as number) ?? hueFor(found.uid),
+    langs: (p.langs ?? []) as string[],
+    joined: created ? created.toDate() : null,
+    shares,
+    streak: streakOf(activity, today, shares ? ((p.frozen ?? []) as string[]) : []),
+    totalXP: Number(stats?.totalXP ?? 0),
+    league: p.league ? TIERS[p.league.tier as number] ?? null : null,
+    friendsCount,
+    lessons: Number(stats?.lessons ?? 0),
+    bestStreak: Number(stats?.bestStreak ?? 0),
+    achievements: Object.values(ach).filter((v) => v > 0).length,
+  };
+}

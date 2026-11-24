@@ -14,5 +14,6 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/lib ./lib
 COPY functions/package.json ./
 COPY functions/data ./data
+USER node
 EXPOSE 8080
 CMD ["node", "lib/src/server.js"]

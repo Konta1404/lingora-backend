@@ -7,15 +7,54 @@ Firebase backend for the [Lingora iOS app](https://github.com/Konta1404/lingora-
 - **Firebase Auth**: ChatGPT, Apple, Google and email/password. ChatGPT sign-ins are minted as Firebase custom tokens. Every AI function requires a signed-in user with a connected plan.
 
 ```
-firebase.json            Firebase config
-firestore.rules          Database access rules
-functions/src/index.ts   Callable functions
-functions/src/chatgpt.ts Sign in with ChatGPT: OAuth + PKCE, encrypted token storage, refresh
-functions/src/crypto.ts  AES-256-GCM for stored tokens
-functions/src/openai.ts  Responses API client on the user's plan (strict JSON schema, streaming)
-functions/src/vocab.ts   German word list + translation cache
-functions/data/          vocab_de.json (Goethe A1–B1, same file as in the app)
+firebase.json, firestore.rules      Firebase config and database rules (all data is server-only)
+render.yaml, Dockerfile             Render / container deploy
+functions/
+  src/
+    server.ts                       Entry point for Render/Docker: Express app + graceful shutdown
+    index.ts                        Entry point for Firebase Functions: same callables, one function each
+    config/                         Typed env config, data folder lookup
+    core/                           Framework-free basics: errors, dates, input sanitising, logger
+    infra/                          Firebase Admin, Firestore collections, AES-GCM crypto, OpenAI client
+    api/                            Callable definitions and the registry (the API contract)
+    http/                           Express app factory and the Firebase callable wire protocol
+    modules/
+      ai/ course/ vocab/            AI features on the user's ChatGPT plan, course units, word list
+      chatgpt/                      Sign in with ChatGPT: OIDC + PKCE, encrypted tokens, refresh
+      profiles/ activity/ leagues/  Profiles, usernames, photos, streaks, weekly leagues
+      friends/ challenges/ chat/    Friends, feed, cheers, nudges, challenges, shared plans, chat
+      devices/ feedback/ web/       Devices list, feedback, the shareable /u/<handle> page
+  test/                             Unit, HTTP and end-to-end API tests (node:test)
+  data/                             vocab_de.json (Goethe A1–B1, same file as in the app)
 ```
+
+## Architecture
+
+Requests go **transport → callable → service → Firestore**:
+
+- **Transport** (`http/app.ts`, `index.ts`): verifies the Firebase ID token, unwraps the iOS SDK's Int64 values,
+  and turns errors into the callable format `{"error": {"status", "message", "details"}}`.
+  Express and Firebase serve the *same* definitions from `api/registry.ts`, so the API lives in one place.
+- **Callables** (`modules/*/handlers.ts`, `modules/social.handlers.ts`): coerce untrusted input and call a service.
+  `userCallable` requires a signed-in user; `aiCallable` also needs a connected ChatGPT plan and counts the daily limit.
+- **Services** hold the business rules and talk to Firestore through `infra/collections.ts`.
+  Pure rules (streaks, activity merging, league promotion, stats, the profile page) live in separate files with no I/O,
+  so they are unit-tested directly.
+- **Errors**: services throw `AppError` (user-facing, with a callable code), `PlanError` (ChatGPT plan problems)
+  or `AIError` (OpenAI). `core/errors.ts` maps them; anything else becomes `INTERNAL` and is logged.
+
+Callable names and payloads are a contract with the shipped app: `test/contract.test.ts` fails if one disappears.
+
+## Tests
+
+```bash
+cd functions
+npm test          # type-checks, then runs every test
+npm run build     # production build into lib/
+```
+
+`test/api.integration.test.ts` runs the real callables over HTTP against an in-memory Firestore
+(`test/support/fake-firestore.ts`), covering profiles, activity, friends, chat, challenges, leagues, photos and devices.
 
 ## Functions
 
@@ -33,6 +72,8 @@ functions/data/          vocab_de.json (Goethe A1–B1, same file as in the app)
 | `chatgptCallback` | HTTPS redirect target: exchanges the code, stores encrypted tokens, returns to `lingora://chatgpt` |
 | `chatgptAuthFinish` | Gives the app a Firebase custom token after a new ChatGPT sign-in |
 | `chatgptStatus` / `chatgptDisconnect` | Connection state / remove the stored tokens |
+| `courseUnit`, `explainAnswer`, `callFeedback` | AI course units (cached for everyone), answer explanations, call feedback |
+| Social | `profileSync`, `setHandle`, `setPrivacy`, `setAvatar`, `publicProfile`, `reportActivity`, `leagueStatus`, `searchUsers`, `matchContacts`, friend requests, `friendsOverview`, `cheer`, `nudge`, challenges, shared plans, chat, devices, `sendFeedback` |
 
 Every function takes `uiLanguage` / `targetLanguage` (a BCP-47 tag from the phone), so answers come back in the user's own language. Each user is limited to `DAILY_AI_LIMIT` calls a day (300 by default).
 
@@ -89,7 +130,7 @@ Other settings, all optional, also go in `functions/.env.<project-id>`:
 
 ## Deploy on Render
 
-`functions/src/server.ts` runs the same functions as a normal Node web server, and `render.yaml` describes the Render service. Firebase Auth and Firestore stay in your Firebase project; only the code runs on Render.
+`functions/src/server.ts` serves the same callables as a normal Node web server, and `render.yaml` describes the Render service. Firebase Auth and Firestore stay in your Firebase project; only the code runs on Render.
 
 1. **Firebase:** create a project, enable Firestore and Authentication, then go to Project settings → Service accounts → **Generate new private key**. Keep that JSON file private.
 2. **Render:** click **[Deploy to Render](https://render.com/deploy?repo=https://github.com/Konta1404/lingora-backend)**, or go to New → Blueprint and pick this repo. Render asks for:

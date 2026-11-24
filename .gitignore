@@ -12,3 +12,4 @@ infra/*.tfstate*
 infra/.terraform.lock.hcl
 infra/*.json
 infra/*.plist
+functions/lib-test/

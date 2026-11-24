@@ -1,9 +1,9 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 
 /**
- * AES-256-GCM encryption for the ChatGPT tokens stored in a user's account.
- * The key is the Firebase secret TOKEN_ENC_KEY: 32 random bytes, base64.
- *   openssl rand -base64 32 | firebase functions:secrets:set TOKEN_ENC_KEY
+ * AES-256-GCM for the ChatGPT tokens stored in a user's account.
+ * Format: "v1.<iv>.<tag>.<ciphertext>" (base64 parts). The key is TOKEN_ENC_KEY: 32 random bytes, base64
+ * (openssl rand -base64 32).
  */
 function key(b64: string): Buffer {
   const k = Buffer.from(b64, "base64");

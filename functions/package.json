@@ -6,12 +6,14 @@
     "node": "22"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf lib && tsc",
     "build:watch": "tsc --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "test": "rm -rf lib-test && tsc -p tsconfig.test.json --outDir lib-test && NODE_ENV=test node --test \"lib-test/test/**/*.test.js\"",
+    "start": "node lib/src/server.js",
     "serve": "npm run build && firebase emulators:start --only functions,firestore,auth",
     "deploy": "firebase deploy --only functions,firestore",
-    "logs": "firebase functions:log",
-    "start": "node lib/src/server.js"
+    "logs": "firebase functions:log"
   },
   "dependencies": {
     "firebase-admin": "^13.0.0",
